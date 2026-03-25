@@ -1,0 +1,31 @@
+# 3D CG Production File Viewer - Dependencies
+# Python 3.11+
+
+# GUI
+PySide6>=6.6.0
+
+# 3D / Mesh processing
+trimesh>=4.0.0
+pyopengl>=3.1.7
+open3d>=0.18.0
+
+# Point cloud (LAS/LAZ)
+laspy>=2.5.0
+lazrs>=0.5.0   # LAZ decompression backend for laspy
+
+# Image processing
+Pillow>=10.0.0
+openexr-python>=3.2.0
+psd-tools>=1.9.0
+
+# Video thumbnails (ffmpeg binary required separately)
+# ffmpeg called via subprocess - no Python package needed
+
+# PDF
+pymupdf>=1.23.0   # fitz
+
+# Data formats
+numpy>=1.26.0
+PyYAML>=6.0.1
+
+# SQLite is stdlib - no package needed

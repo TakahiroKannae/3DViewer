@@ -138,17 +138,186 @@ def draw_wireframe_placeholder(img: Image.Image, mesh, size: int) -> None:
             draw.line(pts + [pts[0]], fill=(180, 180, 180), width=1)
 
 
+def _load_fbx_vertices(path: Path) -> np.ndarray | None:
+    """Extract vertex positions from FBX binary format (pure Python, no assimp).
+
+    FBX Binary structure:
+      Magic: b"Kaydara FBX Binary  \\x00\\x1a\\x00"  (23 bytes)
+      Version: uint32
+      Nodes: recursive records
+    Each node record:
+      EndOffset     : uint32 (FBX < 7500) or uint64 (FBX >= 7500)
+      NumProperties : uint32 / uint64
+      PropertyLen   : uint32 / uint64
+      NameLen       : uint8
+      Name          : bytes[NameLen]
+      Properties    : ...
+      Children      : recursive
+    """
+    import struct
+
+    FBX_MAGIC = b"Kaydara FBX Binary  \x00\x1a\x00"
+    try:
+        data = path.read_bytes()
+    except Exception:
+        return None
+
+    if not data.startswith(FBX_MAGIC):
+        return None  # ASCII FBX or not FBX
+
+    version = struct.unpack_from("<I", data, 23)[0]
+    is_v7500 = version >= 7500
+
+    def read_node(offset: int):
+        """Parse one node, return (end_offset, name, properties, children_start)."""
+        try:
+            if is_v7500:
+                end_off, n_props, prop_len = struct.unpack_from("<QQQ", data, offset)
+                name_len = struct.unpack_from("B", data, offset + 24)[0]
+                header_size = 25
+            else:
+                end_off, n_props, prop_len = struct.unpack_from("<III", data, offset)
+                name_len = struct.unpack_from("B", data, offset + 12)[0]
+                header_size = 13
+        except struct.error:
+            return None
+
+        if end_off == 0:
+            return None  # null record
+
+        name_start = offset + header_size
+        name = data[name_start: name_start + name_len].decode("utf-8", errors="replace")
+        props_start = name_start + name_len
+        children_start = props_start + prop_len
+        return (int(end_off), name, props_start, int(n_props), children_start)
+
+    def read_property(offset: int):
+        """Read a single property value, return (value_or_None, next_offset)."""
+        try:
+            type_code = chr(data[offset])
+            offset += 1
+        except IndexError:
+            return None, offset
+
+        try:
+            if type_code == "d":   # float64 array
+                count, encoding, comp_len = struct.unpack_from("<III", data, offset)
+                offset += 12
+                raw = data[offset: offset + comp_len]
+                offset += comp_len
+                if encoding == 1:
+                    import zlib
+                    raw = zlib.decompress(raw)
+                arr = np.frombuffer(raw, dtype=np.float64)
+                return arr, offset
+            elif type_code == "f":  # float32 array
+                count, encoding, comp_len = struct.unpack_from("<III", data, offset)
+                offset += 12
+                raw = data[offset: offset + comp_len]
+                offset += comp_len
+                if encoding == 1:
+                    import zlib
+                    raw = zlib.decompress(raw)
+                arr = np.frombuffer(raw, dtype=np.float32).astype(np.float64)
+                return arr, offset
+            elif type_code == "D":  # double scalar
+                v = struct.unpack_from("<d", data, offset)[0]
+                return v, offset + 8
+            elif type_code == "F":  # float scalar
+                v = struct.unpack_from("<f", data, offset)[0]
+                return v, offset + 4
+            elif type_code == "I":  # int32 scalar
+                v = struct.unpack_from("<i", data, offset)[0]
+                return v, offset + 4
+            elif type_code == "L":  # int64 scalar
+                v = struct.unpack_from("<q", data, offset)[0]
+                return v, offset + 8
+            elif type_code == "S":  # string
+                slen = struct.unpack_from("<I", data, offset)[0]
+                s = data[offset + 4: offset + 4 + slen]
+                return s, offset + 4 + slen
+            elif type_code == "R":  # raw bytes
+                rlen = struct.unpack_from("<I", data, offset)[0]
+                return None, offset + 4 + rlen
+            elif type_code in ("C", "Y", "i", "l", "b"):
+                sizes = {"C": 1, "Y": 2, "i": 4, "l": 8, "b": 1}
+                return None, offset + sizes.get(type_code, 1)
+            else:
+                return None, offset
+        except Exception:
+            return None, offset
+
+    all_vertices = []
+
+    def walk_nodes(offset: int, end: int, depth: int = 0):
+        """Recursively walk nodes, collect Vertices arrays."""
+        while offset < end:
+            node = read_node(offset)
+            if node is None:
+                break
+            end_off, name, props_start, n_props, children_start = node
+
+            # Collect Vertices property (array of float64/float32)
+            if name == "Vertices" and n_props >= 1:
+                prop_val, _ = read_property(props_start)
+                if isinstance(prop_val, np.ndarray) and len(prop_val) >= 3:
+                    pts = prop_val.reshape(-1, 3)
+                    all_vertices.append(pts)
+
+            # Recurse into children (limit depth to avoid infinite loops)
+            if depth < 8 and children_start < end_off:
+                walk_nodes(children_start, end_off, depth + 1)
+
+            offset = end_off
+
+    walk_nodes(27, len(data) - 1)
+
+    if not all_vertices:
+        return None
+
+    pts = np.concatenate(all_vertices, axis=0)
+    return pts.astype(np.float32)
+
+
+def _render_pointcloud_as_mesh(pts: np.ndarray, size: int) -> bytes:
+    """Render extracted vertices as a point cloud projection."""
+    from .pointcloud_gen import _project_points_to_image
+    return _project_points_to_image(pts, size)
+
+
 def generate_mesh_thumbnail(path: Path, size: int) -> bytes:
-    """Load 3D mesh and render thumbnail."""
+    """Load 3D mesh and render thumbnail.
+
+    For FBX: tries trimesh first (needs assimp), falls back to pure Python
+    FBX binary vertex extraction + point cloud projection.
+    """
     import trimesh
 
+    ext = path.suffix.lstrip(".").lower()
     log.debug("Loading mesh: %s", path)
-    scene_or_mesh = trimesh.load(str(path), force="scene")
 
-    result = _render_with_pyrender(scene_or_mesh, size)
-    if result:
-        return result
-    return _render_with_trimesh(scene_or_mesh, size)
+    try:
+        scene_or_mesh = trimesh.load(str(path), force="scene")
+        # Verify we actually got geometry
+        if hasattr(scene_or_mesh, "geometry") and not scene_or_mesh.geometry:
+            raise ValueError("trimesh returned empty scene")
+        result = _render_with_pyrender(scene_or_mesh, size)
+        if result:
+            return result
+        return _render_with_trimesh(scene_or_mesh, size)
+
+    except Exception as e:
+        log.debug("trimesh load failed for %s (%s), trying fallback", path, e)
+
+    # FBX fallback: pure Python vertex extraction
+    if ext == "fbx":
+        pts = _load_fbx_vertices(path)
+        if pts is not None and len(pts) >= 3:
+            log.debug("FBX fallback: rendering %d vertices from %s", len(pts), path)
+            return _render_pointcloud_as_mesh(pts, size)
+
+    # Final fallback: metadata icon
+    return generate_metadata_only_thumbnail(path, size, path.suffix.lstrip(".").upper())
 
 
 def generate_metadata_only_thumbnail(path: Path, size: int, label: str) -> bytes:

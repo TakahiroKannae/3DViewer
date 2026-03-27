@@ -21,10 +21,10 @@ open3d>=0.18.0
 laspy>=2.5.0
 lazrs>=0.5.0           # LAZ 解凍バックエンド
 
-# ===== EXR (オプション / Optional) =====
-# Windows では C++ ビルドツール + OpenEXR ヘッダが必要なためビルド失敗することがある。
-# インストールできなくてもアプリは起動する（EXR は PIL フォールバックで表示）。
-# openexr-python>=3.2.0
+# ===== EXR サポート (Windows推奨) =====
+# opencv-python は pip で入る既製ホイールで EXR 読み込みが可能。
+# openexr-python は Windows では C++ ビルドツールが必要なため通常不要。
+opencv-python>=4.8.0
 
 # ===== Video thumbnails =====
 # ffmpeg は subprocess 経由で呼び出す。bin/ffmpeg.exe を配置すること。

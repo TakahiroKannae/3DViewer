@@ -80,12 +80,12 @@ _EXT_MAP: dict[str, tuple[str, str]] = {
     "meta":   (CATEGORY_GAMEENGINE, "Unity Meta"),
 }
 
-# Formats that trimesh can load (used by 3D thumbnail generator)
-TRIMESH_LOADABLE = {"obj", "glb", "gltf", "stl", "ply", "3ds", "dxf"}
+# Formats that trimesh can load natively (used by 3D thumbnail generator)
+TRIMESH_LOADABLE = {"obj", "glb", "gltf", "stl", "ply", "3ds", "dxf", "fbx"}
 # Formats that need open3d for loading
 OPEN3D_LOADABLE  = {"ply", "pcd", "xyz", "pts"}
-# Metadata-only 3D formats
-METADATA_ONLY_3D = {"ma", "mb", "blend", "fbx", "abc", "usd", "usda", "usdc"}
+# Metadata-only 3D formats (binary formats we cannot parse geometry from)
+METADATA_ONLY_3D = {"ma", "mb", "blend", "abc", "usd", "usda", "usdc"}
 
 
 def get_format_info(path: str | Path) -> tuple[str, str]:

@@ -80,7 +80,13 @@ class GridView(QListView):
 
     def _on_double_click(self, index) -> None:
         item: FileItem = index.data(Role.ITEM)
-        if item:
+        if not item:
+            return
+        from ..formats import CATEGORY_3D
+        if item.category == CATEGORY_3D and not item.is_sequence:
+            from .mesh_viewer import open_mesh_viewer
+            open_mesh_viewer(item.real_path(), self)
+        else:
             self.item_activated.emit(item.path_or_group)
 
     def _context_menu(self, pos) -> None:
@@ -92,6 +98,13 @@ class GridView(QListView):
             return
 
         menu = QMenu(self)
+
+        from ..formats import CATEGORY_3D
+        if item.category == CATEGORY_3D and not item.is_sequence:
+            act_3d = QAction("Open in 3D Viewer", self)
+            act_3d.triggered.connect(lambda: self._open_3d_viewer(item))
+            menu.addAction(act_3d)
+            menu.addSeparator()
 
         act_open = QAction("Open in File Manager", self)
         act_open.triggered.connect(lambda: self._open_in_manager(item))
@@ -111,6 +124,10 @@ class GridView(QListView):
     # ------------------------------------------------------------------
     # Context menu handlers
     # ------------------------------------------------------------------
+
+    def _open_3d_viewer(self, item: FileItem) -> None:
+        from .mesh_viewer import open_mesh_viewer
+        open_mesh_viewer(item.real_path(), self)
 
     def _open_in_manager(self, item: FileItem) -> None:
         path = item.real_path()

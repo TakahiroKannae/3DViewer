@@ -52,6 +52,9 @@ def _exr_via_openexr(path: Path, size: int) -> bytes:
 
 def _exr_via_opencv(path: Path, size: int) -> bytes:
     """EXR via opencv-python (Windows推奨: pip install opencv-python でEXRサポート内蔵)."""
+    import os
+    # OpenCV 4.5.4+ ではセキュリティのためEXR読み込みに環境変数が必要
+    os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
     import cv2
     import numpy as np
 

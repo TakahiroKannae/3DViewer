@@ -22,6 +22,7 @@ _EXT_MAP: dict[str, tuple[str, str]] = {
     "obj":   (CATEGORY_3D, "OBJ"),
     "gltf":  (CATEGORY_3D, "glTF"),
     "glb":   (CATEGORY_3D, "GLB"),
+    "vrm":   (CATEGORY_3D, "VRM"),
     "abc":   (CATEGORY_3D, "Alembic"),
     "usd":   (CATEGORY_3D, "USD"),
     "usda":  (CATEGORY_3D, "USDA"),
@@ -81,7 +82,7 @@ _EXT_MAP: dict[str, tuple[str, str]] = {
 }
 
 # Formats that trimesh can load natively (used by 3D thumbnail generator)
-TRIMESH_LOADABLE = {"obj", "glb", "gltf", "stl", "ply", "3ds", "dxf", "fbx"}
+TRIMESH_LOADABLE = {"obj", "glb", "gltf", "stl", "ply", "3ds", "dxf", "fbx", "vrm"}
 # Formats that need open3d for loading
 OPEN3D_LOADABLE  = {"ply", "pcd", "xyz", "pts"}
 # Metadata-only 3D formats (binary formats we cannot parse geometry from)

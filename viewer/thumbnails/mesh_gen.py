@@ -138,185 +138,293 @@ def draw_wireframe_placeholder(img: Image.Image, mesh, size: int) -> None:
             draw.line(pts + [pts[0]], fill=(180, 180, 180), width=1)
 
 
-def _load_fbx_vertices(path: Path) -> np.ndarray | None:
-    """Extract vertex positions from FBX binary format (pure Python, no assimp).
+def _parse_fbx_binary(path: Path) -> dict | None:
+    """Extract vertices + triangulated faces from FBX binary (pure Python).
 
-    FBX Binary structure:
-      Magic: b"Kaydara FBX Binary  \\x00\\x1a\\x00"  (23 bytes)
-      Version: uint32
-      Nodes: recursive records
-    Each node record:
-      EndOffset     : uint32 (FBX < 7500) or uint64 (FBX >= 7500)
-      NumProperties : uint32 / uint64
-      PropertyLen   : uint32 / uint64
-      NameLen       : uint8
-      Name          : bytes[NameLen]
-      Properties    : ...
-      Children      : recursive
+    Returns dict with 'vertices' (Nx3 float32) and 'faces' (Mx3 int32),
+    or None if parse fails / not binary FBX.
     """
-    import struct
+    import struct, zlib
 
     FBX_MAGIC = b"Kaydara FBX Binary  \x00\x1a\x00"
     try:
         data = path.read_bytes()
     except Exception:
         return None
-
     if not data.startswith(FBX_MAGIC):
-        return None  # ASCII FBX or not FBX
+        return None
 
     version = struct.unpack_from("<I", data, 23)[0]
     is_v7500 = version >= 7500
 
-    def read_node(offset: int):
-        """Parse one node, return (end_offset, name, properties, children_start)."""
+    def read_node(off):
         try:
             if is_v7500:
-                end_off, n_props, prop_len = struct.unpack_from("<QQQ", data, offset)
-                name_len = struct.unpack_from("B", data, offset + 24)[0]
-                header_size = 25
+                eo, np_, pl = struct.unpack_from("<QQQ", data, off)
+                nl = struct.unpack_from("B", data, off + 24)[0]
+                hs = 25
             else:
-                end_off, n_props, prop_len = struct.unpack_from("<III", data, offset)
-                name_len = struct.unpack_from("B", data, offset + 12)[0]
-                header_size = 13
+                eo, np_, pl = struct.unpack_from("<III", data, off)
+                nl = struct.unpack_from("B", data, off + 12)[0]
+                hs = 13
         except struct.error:
             return None
+        if eo == 0:
+            return None
+        ns = off + hs
+        name = data[ns: ns + nl].decode("utf-8", errors="replace")
+        ps = ns + nl
+        cs = ps + pl
+        return int(eo), name, ps, int(np_), cs
 
-        if end_off == 0:
-            return None  # null record
-
-        name_start = offset + header_size
-        name = data[name_start: name_start + name_len].decode("utf-8", errors="replace")
-        props_start = name_start + name_len
-        children_start = props_start + prop_len
-        return (int(end_off), name, props_start, int(n_props), children_start)
-
-    def read_property(offset: int):
-        """Read a single property value, return (value_or_None, next_offset)."""
+    def read_arr(off):
+        """Read a typed array property (d/f/i/l). Returns (array, next_off)."""
         try:
-            type_code = chr(data[offset])
-            offset += 1
+            tc = chr(data[off]); off += 1
         except IndexError:
-            return None, offset
-
+            return None, off
         try:
-            if type_code == "d":   # float64 array
-                count, encoding, comp_len = struct.unpack_from("<III", data, offset)
-                offset += 12
-                raw = data[offset: offset + comp_len]
-                offset += comp_len
-                if encoding == 1:
-                    import zlib
+            if tc in ("d", "f", "i", "l"):
+                count, enc, clen = struct.unpack_from("<III", data, off); off += 12
+                raw = data[off: off + clen]; off += clen
+                if enc == 1:
                     raw = zlib.decompress(raw)
-                arr = np.frombuffer(raw, dtype=np.float64)
-                return arr, offset
-            elif type_code == "f":  # float32 array
-                count, encoding, comp_len = struct.unpack_from("<III", data, offset)
-                offset += 12
-                raw = data[offset: offset + comp_len]
-                offset += comp_len
-                if encoding == 1:
-                    import zlib
-                    raw = zlib.decompress(raw)
-                arr = np.frombuffer(raw, dtype=np.float32).astype(np.float64)
-                return arr, offset
-            elif type_code == "D":  # double scalar
-                v = struct.unpack_from("<d", data, offset)[0]
-                return v, offset + 8
-            elif type_code == "F":  # float scalar
-                v = struct.unpack_from("<f", data, offset)[0]
-                return v, offset + 4
-            elif type_code == "I":  # int32 scalar
-                v = struct.unpack_from("<i", data, offset)[0]
-                return v, offset + 4
-            elif type_code == "L":  # int64 scalar
-                v = struct.unpack_from("<q", data, offset)[0]
-                return v, offset + 8
-            elif type_code == "S":  # string
-                slen = struct.unpack_from("<I", data, offset)[0]
-                s = data[offset + 4: offset + 4 + slen]
-                return s, offset + 4 + slen
-            elif type_code == "R":  # raw bytes
-                rlen = struct.unpack_from("<I", data, offset)[0]
-                return None, offset + 4 + rlen
-            elif type_code in ("C", "Y", "i", "l", "b"):
-                sizes = {"C": 1, "Y": 2, "i": 4, "l": 8, "b": 1}
-                return None, offset + sizes.get(type_code, 1)
+                dtype = {"d": np.float64, "f": np.float32,
+                         "i": np.int32,   "l": np.int64}[tc]
+                return np.frombuffer(raw, dtype=dtype), off
+            elif tc == "D":
+                return struct.unpack_from("<d", data, off)[0], off + 8
+            elif tc == "F":
+                return struct.unpack_from("<f", data, off)[0], off + 4
+            elif tc == "I":
+                return struct.unpack_from("<i", data, off)[0], off + 4
+            elif tc == "L":
+                return struct.unpack_from("<q", data, off)[0], off + 8
+            elif tc == "S":
+                sl = struct.unpack_from("<I", data, off)[0]
+                return None, off + 4 + sl
+            elif tc == "R":
+                rl = struct.unpack_from("<I", data, off)[0]
+                return None, off + 4 + rl
+            elif tc in ("C", "Y", "b"):
+                return None, off + 1
             else:
-                return None, offset
+                return None, off
         except Exception:
-            return None, offset
+            return None, off
 
-    all_vertices = []
+    # Walk geometry nodes and collect per-geometry (vertices, poly_indices)
+    geometries: list[dict] = []
 
-    def walk_nodes(offset: int, end: int, depth: int = 0):
-        """Recursively walk nodes, collect Vertices arrays."""
-        while offset < end:
-            node = read_node(offset)
+    def walk_geo_children(off, end, geo):
+        while off < end:
+            node = read_node(off)
             if node is None:
                 break
-            end_off, name, props_start, n_props, children_start = node
+            eo, name, ps, np_, cs = node
+            if name == "Vertices" and np_ >= 1:
+                arr, _ = read_arr(ps)
+                if isinstance(arr, np.ndarray) and arr.size >= 3:
+                    geo["v"] = arr.astype(np.float32).reshape(-1, 3)
+            elif name == "PolygonVertexIndex" and np_ >= 1:
+                arr, _ = read_arr(ps)
+                if isinstance(arr, np.ndarray):
+                    geo["pi"] = arr.astype(np.int32)
+            off = eo
 
-            # Collect Vertices property (array of float64/float32)
-            if name == "Vertices" and n_props >= 1:
-                prop_val, _ = read_property(props_start)
-                if isinstance(prop_val, np.ndarray) and len(prop_val) >= 3:
-                    pts = prop_val.reshape(-1, 3)
-                    all_vertices.append(pts)
+    def walk_top(off, end, depth=0):
+        while off < end:
+            node = read_node(off)
+            if node is None:
+                break
+            eo, name, ps, np_, cs = node
+            if name == "Geometry" and depth <= 4:
+                geo: dict = {}
+                walk_geo_children(cs, eo, geo)
+                if "v" in geo:
+                    geometries.append(geo)
+            elif depth < 6:
+                walk_top(cs, eo, depth + 1)
+            off = eo
 
-            # Recurse into children (limit depth to avoid infinite loops)
-            if depth < 8 and children_start < end_off:
-                walk_nodes(children_start, end_off, depth + 1)
+    walk_top(27, len(data) - 1)
 
-            offset = end_off
-
-    walk_nodes(27, len(data) - 1)
-
-    if not all_vertices:
+    if not geometries:
         return None
 
-    pts = np.concatenate(all_vertices, axis=0)
-    return pts.astype(np.float32)
+    # Merge all geometries
+    all_verts, all_faces = [], []
+    v_offset = 0
+    for geo in geometries:
+        verts = geo["v"]
+        pi = geo.get("pi")
+        all_verts.append(verts)
+        if pi is not None:
+            # Decode FBX polygon vertex indices: negative = end-of-polygon marker
+            tris = []
+            poly: list[int] = []
+            for idx in pi:
+                if idx < 0:
+                    poly.append(int(-(idx + 1)))
+                    if len(poly) >= 3:
+                        v0 = poly[0]
+                        for i in range(1, len(poly) - 1):
+                            tris.append([v0 + v_offset,
+                                         poly[i] + v_offset,
+                                         poly[i + 1] + v_offset])
+                    poly = []
+                else:
+                    poly.append(int(idx))
+            if tris:
+                all_faces.append(np.array(tris, dtype=np.int32))
+        v_offset += len(verts)
+
+    verts_all = np.concatenate(all_verts, axis=0)
+    faces_all = np.concatenate(all_faces, axis=0) if all_faces else None
+    return {"vertices": verts_all, "faces": faces_all}
 
 
-def _render_pointcloud_as_mesh(pts: np.ndarray, size: int) -> bytes:
-    """Render extracted vertices as a point cloud projection."""
-    from .pointcloud_gen import _project_points_to_image
-    return _project_points_to_image(pts, size)
+def _render_shaded_software(
+    verts: np.ndarray,
+    faces: np.ndarray | None,
+    size: int,
+    base_color: tuple = (110, 150, 200),
+) -> bytes:
+    """Software Phong-shaded thumbnail using PIL polygon drawing.
+
+    Falls back to point cloud projection when faces are unavailable.
+    """
+    from PIL import ImageDraw
+
+    if faces is None or len(faces) == 0:
+        from .pointcloud_gen import _project_points_to_image
+        return _project_points_to_image(verts, size)
+
+    # --- Camera transform: 35° elevation, 45° azimuth ---
+    elev = math.radians(35)
+    azim = math.radians(45)
+    Rx = np.array([[1, 0, 0],
+                   [0, math.cos(elev), -math.sin(elev)],
+                   [0, math.sin(elev),  math.cos(elev)]], dtype=np.float32)
+    Rz = np.array([[math.cos(azim), -math.sin(azim), 0],
+                   [math.sin(azim),  math.cos(azim), 0],
+                   [0, 0, 1]], dtype=np.float32)
+    R = Rx @ Rz
+
+    # Center and normalize
+    center = (verts.max(axis=0) + verts.min(axis=0)) / 2
+    v = (verts - center).astype(np.float32)
+    scale = max(np.abs(v).max(), 1e-6)
+    v /= scale
+
+    vr = (R @ v.T).T  # rotated vertices
+
+    # Ortho projection to pixel coords
+    mn, mx = vr[:, :2].min(axis=0), vr[:, :2].max(axis=0)
+    span = max((mx - mn).max(), 1e-6)
+    margin = size * 0.08
+    px_scale = (size - 2 * margin) / span
+
+    px = (vr[:, 0] - mn[0]) * px_scale + margin
+    py = size - ((vr[:, 1] - mn[1]) * px_scale + margin)
+    pz = vr[:, 2]
+
+    # Light direction (in rotated space)
+    light = np.array([0.5, 0.7, 1.0], dtype=np.float32)
+    light /= np.linalg.norm(light)
+
+    ambient = 0.25
+    br, bg_, bb = base_color
+
+    # Build face draw list
+    v0 = vr[faces[:, 0]]
+    v1 = vr[faces[:, 1]]
+    v2 = vr[faces[:, 2]]
+    normals = np.cross(v1 - v0, v2 - v0)
+    lens = np.linalg.norm(normals, axis=1, keepdims=True)
+    lens[lens < 1e-10] = 1.0
+    normals /= lens
+
+    diff = np.abs(normals @ light)            # double-sided
+    intensity = ambient + (1.0 - ambient) * diff
+    intensity = np.clip(intensity, 0, 1)
+
+    depths = (pz[faces[:, 0]] + pz[faces[:, 1]] + pz[faces[:, 2]]) / 3
+
+    # Sort back-to-front (painter's algorithm)
+    order = np.argsort(depths)
+
+    img = Image.new("RGB", (size, size), (22, 22, 30))
+    draw = ImageDraw.Draw(img)
+
+    for fi in order:
+        face = faces[fi]
+        pts = [(float(px[vi]), float(py[vi])) for vi in face]
+        iv = float(intensity[fi])
+        color = (int(br * iv), int(bg_ * iv), int(bb * iv))
+        draw.polygon(pts, fill=color)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _extract_trimesh_geometry(scene_or_mesh) -> tuple[np.ndarray, np.ndarray] | None:
+    """Extract combined (vertices, faces) from a trimesh Scene or Mesh."""
+    import trimesh
+
+    try:
+        if hasattr(scene_or_mesh, "geometry") and scene_or_mesh.geometry:
+            meshes = [m for m in scene_or_mesh.geometry.values()
+                      if hasattr(m, "vertices") and len(m.vertices) > 0]
+            if not meshes:
+                return None
+            combined = trimesh.util.concatenate(meshes)
+        else:
+            combined = scene_or_mesh
+
+        if not hasattr(combined, "vertices") or len(combined.vertices) == 0:
+            return None
+        return np.array(combined.vertices, dtype=np.float32), np.array(combined.faces, dtype=np.int32)
+    except Exception:
+        return None
 
 
 def generate_mesh_thumbnail(path: Path, size: int) -> bytes:
-    """Load 3D mesh and render thumbnail.
+    """Load 3D mesh and render a shaded thumbnail.
 
-    For FBX: tries trimesh first (needs assimp), falls back to pure Python
-    FBX binary vertex extraction + point cloud projection.
+    Pipeline:
+      1. trimesh.load → software Phong shading
+      2. FBX binary parser (pure Python) → software Phong shading
+      3. Fallback icon
     """
     import trimesh
 
     ext = path.suffix.lstrip(".").lower()
-    log.debug("Loading mesh: %s", path)
+    log.debug("Loading mesh for thumbnail: %s", path)
 
+    # --- 1. Try trimesh ---
     try:
         scene_or_mesh = trimesh.load(str(path), force="scene")
-        # Verify we actually got geometry
-        if hasattr(scene_or_mesh, "geometry") and not scene_or_mesh.geometry:
-            raise ValueError("trimesh returned empty scene")
-        result = _render_with_pyrender(scene_or_mesh, size)
-        if result:
-            return result
-        return _render_with_trimesh(scene_or_mesh, size)
-
+        geo = _extract_trimesh_geometry(scene_or_mesh)
+        if geo is not None:
+            verts, faces = geo
+            return _render_shaded_software(verts, faces, size)
     except Exception as e:
-        log.debug("trimesh load failed for %s (%s), trying fallback", path, e)
+        log.debug("trimesh failed for %s: %s", path, e)
 
-    # FBX fallback: pure Python vertex extraction
+    # --- 2. FBX pure Python fallback ---
     if ext == "fbx":
-        pts = _load_fbx_vertices(path)
-        if pts is not None and len(pts) >= 3:
-            log.debug("FBX fallback: rendering %d vertices from %s", len(pts), path)
-            return _render_pointcloud_as_mesh(pts, size)
+        result = _parse_fbx_binary(path)
+        if result is not None:
+            log.debug("FBX binary parse: %d verts, %s faces",
+                      len(result["vertices"]),
+                      len(result["faces"]) if result["faces"] is not None else "none")
+            return _render_shaded_software(
+                result["vertices"], result["faces"], size
+            )
 
-    # Final fallback: metadata icon
+    # --- 3. Final fallback ---
     return generate_metadata_only_thumbnail(path, size, path.suffix.lstrip(".").upper())
 
 

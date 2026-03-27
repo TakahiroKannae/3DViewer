@@ -82,10 +82,15 @@ class GridView(QListView):
         item: FileItem = index.data(Role.ITEM)
         if not item:
             return
-        from ..formats import CATEGORY_3D
-        if item.category == CATEGORY_3D and not item.is_sequence:
+        from ..formats import CATEGORY_3D, CATEGORY_POINTCLOUD
+        if item.is_sequence:
+            self.item_activated.emit(item.path_or_group)
+        elif item.category == CATEGORY_3D:
             from .mesh_viewer import open_mesh_viewer
-            open_mesh_viewer(item.real_path(), self)
+            open_mesh_viewer(item.real_path(), self, is_pointcloud=False)
+        elif item.category == CATEGORY_POINTCLOUD:
+            from .mesh_viewer import open_mesh_viewer
+            open_mesh_viewer(item.real_path(), self, is_pointcloud=True)
         else:
             self.item_activated.emit(item.path_or_group)
 
@@ -99,10 +104,13 @@ class GridView(QListView):
 
         menu = QMenu(self)
 
-        from ..formats import CATEGORY_3D
-        if item.category == CATEGORY_3D and not item.is_sequence:
-            act_3d = QAction("Open in 3D Viewer", self)
-            act_3d.triggered.connect(lambda: self._open_3d_viewer(item))
+        from ..formats import CATEGORY_3D, CATEGORY_POINTCLOUD
+        if not item.is_sequence and item.category in (CATEGORY_3D, CATEGORY_POINTCLOUD):
+            is_pc = item.category == CATEGORY_POINTCLOUD
+            act_3d = QAction("Open in Point Cloud Viewer" if is_pc
+                             else "Open in 3D Viewer", self)
+            act_3d.triggered.connect(lambda checked=False, i=item:
+                                     self._open_3d_viewer(i))
             menu.addAction(act_3d)
             menu.addSeparator()
 
@@ -127,7 +135,9 @@ class GridView(QListView):
 
     def _open_3d_viewer(self, item: FileItem) -> None:
         from .mesh_viewer import open_mesh_viewer
-        open_mesh_viewer(item.real_path(), self)
+        from ..formats import CATEGORY_POINTCLOUD
+        open_mesh_viewer(item.real_path(), self,
+                         is_pointcloud=(item.category == CATEGORY_POINTCLOUD))
 
     def _open_in_manager(self, item: FileItem) -> None:
         path = item.real_path()

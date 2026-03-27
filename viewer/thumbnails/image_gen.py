@@ -27,32 +27,72 @@ def generate_image_thumbnail(path: Path, size: int) -> bytes:
         return _to_png_bytes(img, size)
 
 
-def generate_exr_thumbnail(path: Path, size: int) -> bytes:
-    """EXR thumbnail with simple reinhard tone mapping."""
-    try:
-        import OpenEXR
-        import Imath
-        import numpy as np
+def _exr_via_openexr(path: Path, size: int) -> bytes:
+    """EXR via OpenEXR library (optional, Linux/Mac向け)."""
+    import OpenEXR
+    import Imath
+    import numpy as np
 
-        f = OpenEXR.InputFile(str(path))
-        header = f.header()
-        dw = header["dataWindow"]
-        w = dw.max.x - dw.min.x + 1
-        h = dw.max.y - dw.min.y + 1
-        pt = Imath.PixelType(Imath.PixelType.FLOAT)
-        r = np.frombuffer(f.channel("R", pt), dtype=np.float32).reshape(h, w)
-        g = np.frombuffer(f.channel("G", pt), dtype=np.float32).reshape(h, w)
-        b = np.frombuffer(f.channel("B", pt), dtype=np.float32).reshape(h, w)
-        rgb = np.stack([r, g, b], axis=-1)
-        # Reinhard tone mapping
-        rgb = rgb / (1.0 + rgb)
-        rgb = np.clip(rgb, 0, 1)
-        rgb = (rgb ** (1.0 / _TONE_GAMMA) * 255).astype(np.uint8)
-        img = Image.fromarray(rgb, mode="RGB")
-        return _to_png_bytes(img, size)
+    f = OpenEXR.InputFile(str(path))
+    header = f.header()
+    dw = header["dataWindow"]
+    w = dw.max.x - dw.min.x + 1
+    h = dw.max.y - dw.min.y + 1
+    pt = Imath.PixelType(Imath.PixelType.FLOAT)
+    r = np.frombuffer(f.channel("R", pt), dtype=np.float32).reshape(h, w)
+    g = np.frombuffer(f.channel("G", pt), dtype=np.float32).reshape(h, w)
+    b = np.frombuffer(f.channel("B", pt), dtype=np.float32).reshape(h, w)
+    rgb = np.stack([r, g, b], axis=-1)
+    rgb = rgb / (1.0 + rgb)          # Reinhard tone mapping
+    rgb = np.clip(rgb, 0, 1)
+    rgb = (rgb ** (1.0 / _TONE_GAMMA) * 255).astype(np.uint8)
+    img = Image.fromarray(rgb, mode="RGB")
+    return _to_png_bytes(img, size)
+
+
+def _exr_via_pil(path: Path, size: int) -> bytes:
+    """EXR フォールバック: PIL で開いてトーンマッピング。
+    PIL 単体では EXR を開けない場合もあるため、さらに失敗したらダミー画像を返す。
+    """
+    import numpy as np
+
+    try:
+        with Image.open(path) as img:
+            arr = np.array(img, dtype=np.float32)
+            if arr.ndim == 2:
+                arr = np.stack([arr, arr, arr], axis=-1)
+            arr = arr[:, :, :3]
+            arr = arr / (1.0 + arr)
+            arr = np.clip(arr, 0, 1)
+            arr = (arr ** (1.0 / _TONE_GAMMA) * 255).astype(np.uint8)
+            return _to_png_bytes(Image.fromarray(arr, mode="RGB"), size)
     except Exception:
-        log.exception("EXR thumbnail failed for %s, falling back to PIL", path)
-        return generate_image_thumbnail(path, size)
+        # PIL が EXR を開けない場合: グレーのプレースホルダー
+        img = Image.new("RGB", (size, size), (80, 80, 80))
+        from PIL import ImageDraw, ImageFont
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.load_default()
+        except Exception:
+            font = None
+        draw.text((size // 4, size // 2 - 8), "EXR", fill=(200, 200, 200), font=font)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+
+def generate_exr_thumbnail(path: Path, size: int) -> bytes:
+    """EXR thumbnail with Reinhard tone mapping.
+    OpenEXR ライブラリがあれば使用、なければ PIL フォールバック。
+    """
+    try:
+        return _exr_via_openexr(path, size)
+    except ImportError:
+        log.debug("OpenEXR not installed, using PIL fallback for %s", path)
+        return _exr_via_pil(path, size)
+    except Exception:
+        log.warning("EXR thumbnail failed for %s, using PIL fallback", path)
+        return _exr_via_pil(path, size)
 
 
 def generate_hdr_thumbnail(path: Path, size: int) -> bytes:

@@ -1,31 +1,33 @@
 # 3D CG Production File Viewer - Dependencies
-# Python 3.11+
+# Python 3.11+  /  Windows・Mac・Linux 対応
 
-# GUI
+# ===== 必須 (Required) =====
 PySide6>=6.6.0
-
-# 3D / Mesh processing
-trimesh>=4.0.0
-pyopengl>=3.1.7
-open3d>=0.18.0
-
-# Point cloud (LAS/LAZ)
-laspy>=2.5.0
-lazrs>=0.5.0   # LAZ decompression backend for laspy
-
-# Image processing
 Pillow>=10.0.0
-openexr-python>=3.2.0
-psd-tools>=1.9.0
-
-# Video thumbnails (ffmpeg binary required separately)
-# ffmpeg called via subprocess - no Python package needed
-
-# PDF
-pymupdf>=1.23.0   # fitz
-
-# Data formats
 numpy>=1.26.0
 PyYAML>=6.0.1
+pymupdf>=1.23.0        # fitz - PDF サムネイル
+psd-tools>=1.9.0       # PSD/PSB プレビュー
 
-# SQLite is stdlib - no package needed
+# ===== 3D メッシュ (3D Mesh) =====
+trimesh>=4.0.0
+pyopengl>=3.1.7
+
+# ===== 点群 (Point Cloud) =====
+# open3d は大きいパッケージ (約500MB)。不要なら省略可。
+open3d>=0.18.0
+
+# ===== 点群 LAS/LAZ =====
+laspy>=2.5.0
+lazrs>=0.5.0           # LAZ 解凍バックエンド
+
+# ===== EXR (オプション / Optional) =====
+# Windows では C++ ビルドツール + OpenEXR ヘッダが必要なためビルド失敗することがある。
+# インストールできなくてもアプリは起動する（EXR は PIL フォールバックで表示）。
+# openexr-python>=3.2.0
+
+# ===== Video thumbnails =====
+# ffmpeg は subprocess 経由で呼び出す。bin/ffmpeg.exe を配置すること。
+# Python パッケージは不要。
+
+# ===== SQLite は標準ライブラリ - インストール不要 =====
